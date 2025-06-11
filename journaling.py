@@ -35,8 +35,13 @@ class JournalingManager:
         else:
             self.output_dir = output_dir
             
+<<<<<<< HEAD
         # Set default prompts
         self.default_summary_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
+=======
+        # Set default summary prompt
+        self.default_summary_prompt = "Summarize the following text in 1-2 sentences. Only output the summary, with no preamble or extra instructions."
+>>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
         self.summary_prompt = summary_prompt if summary_prompt else self.default_summary_prompt
         
         # Default formatting prompt
@@ -97,24 +102,23 @@ class JournalingManager:
     def save_audio(self, audio_data: bytes, sample_rate: int = 16000) -> str:
         """
         Save audio data to a file and return the file path.
-        
+
         Args:
-            audio_data: Raw audio data as numpy array
-            sample_rate: Audio sample rate
-            
+            audio_data (bytes or np.ndarray): Raw audio data as numpy array or bytes
+            sample_rate (int): Audio sample rate
+
         Returns:
             str: Path to the saved audio file
         """
+        import numpy as np
+        logging.debug(f"[save_audio] self.recordings_dir: {self.recordings_dir}")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"recording_{timestamp}.wav"
         filepath = os.path.join(self.recordings_dir, filename)
-        
         try:
             # Convert bytes to numpy array if needed
-            import numpy as np
             if isinstance(audio_data, bytes):
                 audio_data = np.frombuffer(audio_data, dtype=np.float32)
-            
             # Save audio file
             sf.write(filepath, audio_data, sample_rate)
             logging.info(f"Audio saved to {filepath}")
@@ -156,7 +160,7 @@ class JournalingManager:
         # If Ollama is not available, return the original text
         if not hasattr(self, 'ollama_available') or not self.ollama_available:
             logging.warning("Ollama not available. Using original text without processing.")
-            return f"Transcription: {text[:50]}..." if len(text) > 50 else f"Transcription: {text}", text
+            return text[:50] + ("..." if len(text) > 50 else ""), text
             
         try:
             # Get summary from Ollama using the custom or default prompt
@@ -185,10 +189,12 @@ class JournalingManager:
         except Exception as e:
             logging.error(f"Error processing text with Ollama: {e}")
             # Create a simple summary as fallback
-            simple_summary = f"Transcription: {text[:50]}..." if len(text) > 50 else f"Transcription: {text}"
+            simple_summary = text[:50] + ("..." if len(text) > 50 else "")
             return simple_summary, text  # Return original text if processing fails
     
     def create_journal_entry(self, transcription: str, audio_data=None, sample_rate: int = 16000, template_name: Optional[str] = None):
+        # Always use the original recordings_dir regardless of template/custom_output_dir
+        self.recordings_dir = os.path.join(self.output_dir, "recordings")
         """
         Create a new journal entry with optional audio and template.
         
@@ -217,12 +223,17 @@ class JournalingManager:
         if isinstance(audio_data, str) and os.path.exists(audio_data):
             # It's already a path to an audio file
             audio_path = audio_data
-            relative_audio_path = os.path.join("recordings", os.path.basename(audio_path))
+            # Calculate path relative to the journal file location
+            relative_audio_path = os.path.relpath(audio_path, os.path.dirname(self.journal_file))
+            logging.debug(f"[create_journal_entry] Using existing audio_path: {audio_path}, relative_audio_path: {relative_audio_path}")
         elif audio_data is not None:
             # It's raw audio data
             audio_path = self.save_audio(audio_data, sample_rate)
             if audio_path:
-                relative_audio_path = os.path.join("recordings", os.path.basename(audio_path))
+                relative_audio_path = os.path.relpath(audio_path, os.path.dirname(self.journal_file))
+                logging.debug(f"[create_journal_entry] Saved audio_path: {audio_path}, relative_audio_path: {relative_audio_path}")
+            else:
+                logging.warning(f"[create_journal_entry] Audio save failed, audio_path is empty.")
         
         # Use template_name parameter if provided, otherwise use active_template
         active_template = template_name or self.active_template
@@ -280,6 +291,7 @@ class JournalingManager:
             str: Path to the saved entry file
         """
         try:
+<<<<<<< HEAD
  HEAD
             # Parse the timestamp to create a formatted time string
             timestamp_obj = datetime.datetime.strptime(entry['timestamp'], "%Y-%m-%d %H:%M:%S")
@@ -298,31 +310,47 @@ class JournalingManager:
             
             # Create filename based on date and time
             entry_filename = f"{entry['date']} - {time_str} - Audio Journal Entry.md"
+=======
+            # Only use template if it is a non-empty string
+            template = entry.get('template')
+            if template and isinstance(template, str) and template.strip():
+                return self._save_entry_with_template(entry)
+
+            # Create filename based on date, ensure uniqueness with a counter if needed
+            base_filename = f"{entry['date']} - Audio Journal Entry"
+            entry_filename = f"{base_filename}.md"
+>>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
             entry_path = os.path.join(self.entries_dir, entry_filename)
-            
+            counter = 2
+            while os.path.exists(entry_path):
+                entry_filename = f"{base_filename} ({counter}).md"
+                entry_path = os.path.join(self.entries_dir, entry_filename)
+                counter += 1
+
             with open(entry_path, 'w', encoding='utf-8') as f:
+<<<<<<< HEAD
                 f.write(f"# Audio Journal Entry - {entry['date']} {time_str}\n\n")
                 
+=======
+                f.write(f"# Audio Journal Entry - {entry['timestamp']}\n\n")
+>>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
                 f.write("### Summary\n")
                 f.write(f"{entry['summary']}\n\n")
-                
                 f.write("### Transcript\n")
                 f.write(f"{entry['formatted_text']}\n\n")
-                
                 # Add tags if available
                 if entry.get('tags'):
                     f.write(f"**Tags**: {entry['tags']}\n\n")
-                
                 # Add link to audio recording if available
                 if entry.get('relative_audio_path'):
-                    f.write(f"🔊 [Listen to recording]({entry['relative_audio_path']})\n\n")
-            
+                    f.write(f" [Listen to recording]({entry['relative_audio_path']})\n\n")
+
             logging.info(f"Detailed journal entry saved to {entry_path}")
             return entry_path
         except Exception as e:
             logging.error(f"Error saving detailed journal entry: {e}")
             return ""
-            
+
     def _save_entry_with_template(self, entry: Dict[str, Any]) -> str:
         """
         Save a journal entry using a template.
@@ -334,6 +362,10 @@ class JournalingManager:
             str: Path to the saved entry file
         """
         try:
+            template = entry.get('template')
+            if not template or not isinstance(template, str) or not template.strip():
+                logging.warning("No valid template specified. Falling back to standard entry format.")
+                return self._save_entry_file({**entry, 'template': ""})
             # Import template manager here to avoid circular imports
             from template_manager import TemplateManager
             
@@ -341,12 +373,17 @@ class JournalingManager:
             template_manager = TemplateManager()
             
             # Apply template to entry
-            formatted_content = template_manager.apply_template(entry['template'], entry)
+            formatted_content = template_manager.apply_template(template, entry)
             
             # Create filename based on template and date
-            template_name = entry['template'].replace(" ", "_")
+            template_name = template.replace(" ", "_")
             entry_filename = f"{entry['date']} - {template_name}.md"
             entry_path = os.path.join(self.entries_dir, entry_filename)
+            counter = 2
+            while os.path.exists(entry_path):
+                entry_filename = f"{entry['date']} - {template_name} ({counter}).md"
+                entry_path = os.path.join(self.entries_dir, entry_filename)
+                counter += 1
             
             # Write the formatted content to file
             with open(entry_path, 'w', encoding='utf-8') as f:
@@ -356,8 +393,7 @@ class JournalingManager:
             return entry_path
         except Exception as e:
             logging.error(f"Error saving template-based journal entry: {e}")
-            # Fall back to standard entry format
-            return self._save_entry_file({**entry, 'template': None})
+            return ""  # Do not recurse
     
     def _save_markdown_entry(self, entry: Dict[str, Any]) -> None:
         """
@@ -370,9 +406,9 @@ class JournalingManager:
             with open(self.journal_file, 'a', encoding='utf-8') as f:
                 f.write(f"\n### {entry['timestamp']}\n\n")
                 
-                # Add link to audio recording if available
+                logging.debug(f"[journal.md] relative_audio_path: {entry.get('relative_audio_path')}")
                 if entry.get('relative_audio_path'):
-                    f.write(f"🔊 [Listen to recording]({entry['relative_audio_path']})  (Right-click and select 'Open Link' to play)\n\n")
+                    f.write(f" [Listen to recording]({entry['relative_audio_path']})\n\n")
                 
                 # Add summary
                 f.write(f"{entry['summary']}\n\n")

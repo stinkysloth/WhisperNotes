@@ -33,7 +33,8 @@ class TrayManager:
         on_edit_prompt=None,
         on_set_journal_dir=None,
         on_configure_templates=None,
-        on_settings=None
+        on_settings=None,
+        on_import_audio=None
     ):
         """
         Initialize the tray manager.
@@ -58,6 +59,7 @@ class TrayManager:
         self.on_set_journal_dir = on_set_journal_dir
         self.on_configure_templates = on_configure_templates
         self.on_settings = on_settings
+        self.on_import_audio = on_import_audio
         self.tray_icon = None
         self._setup_tray()
 
@@ -107,6 +109,11 @@ class TrayManager:
             if any_settings:
                 menu.addMenu(settings_menu)
             menu.addSeparator()
+            # Add Import Audio Files option if callback is provided
+            if self.on_import_audio:
+                import_action = menu.addAction("Import Audio Files...")
+                import_action.triggered.connect(self.on_import_audio)
+                menu.addSeparator()
             quit_action = menu.addAction("Quit")
             quit_action.triggered.connect(self.on_quit)
 

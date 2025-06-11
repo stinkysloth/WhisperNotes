@@ -1,13 +1,13 @@
 # WhisperNotes Tasks
 
-## Feature Enhancements (2025-06-09)
+## Feature Enhancements (2025-06-09) ✅ 2025-03-25
 
--   [ ] **Batch Audio Import:**
-    - Add "Import Audio Files..." option to tray menu
-    - Support importing multiple audio files (.wav, .mp3, .m4a, .amr)
-    - Convert unsupported formats to WAV using pydub
-    - Process files sequentially with progress feedback
-    - Save transcriptions as individual journal entries
+-   [x] **Batch Audio Import:**
+    - [x] Add "Import Audio Files..." option to tray menu
+    - [x] Support importing multiple audio files (.wav, .mp3, .m4a, .amr)
+    - [ ] Convert unsupported formats to WAV using pydub (TODO: Requires pydub and ffmpeg)
+    - [x] Process files sequentially with progress feedback
+    - [x] Save transcriptions as individual journal entries
 
 ## Feature Enhancements (2025-05-26)
 
