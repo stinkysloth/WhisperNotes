@@ -2571,8 +2571,7 @@ Journal Entry:
             except Exception as e:
                 logging.warning(f"Error checking {signal_name} signal: {e}")
 
-        self.show_error_dialog.emit("Error", error_msg)
-        self.stop_recording()
+        # Error handling is done by the caller
     
     @Slot(str, str)
     def _show_error_dialog_slot(self, title, msg):
