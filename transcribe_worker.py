@@ -5,7 +5,7 @@ import json
 import logging
 import traceback
 import time
-import whisper
+from faster_whisper import WhisperModel
 
 # Configure logging to stdout for the subprocess
 logging.basicConfig(
@@ -55,48 +55,47 @@ def main():
                 json.dump({"error": error_msg}, f)
             sys.exit(2)
         
-        # Load audio
-        logger.info("Loading audio file...")
-        try:
-            audio_data = whisper.load_audio(audio_path)
-            logger.info(f"Audio loaded, shape: {audio_data.shape}, dtype: {audio_data.dtype}")
-        except Exception as e:
-            error_msg = f"Failed to load audio: {str(e)}"
-            logger.error(error_msg)
-            with open(result_path, 'w') as f:
-                json.dump({"error": error_msg, "traceback": traceback.format_exc()}, f)
-            sys.exit(3)
+        # Map model names if needed (e.g., 'base' -> 'base.en')
+        model_map = {
+            'base': 'base.en',
+            'small': 'small.en',
+            'medium': 'medium.en',
+            'large': 'large-v3'
+        }
+        model_name = model_map.get(model_name, model_name)
         
         # Load model
-        logger.info(f"Loading Whisper model '{model_name}'...")
+        logger.info(f"Loading model: {model_name}")
         try:
-            model = whisper.load_model(model_name)
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
             logger.info("Model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load model: {str(e)}"
-            logger.error(error_msg)
-            with open(result_path, 'w') as f:
-                json.dump({"error": error_msg, "traceback": traceback.format_exc()}, f)
-            sys.exit(4)
-        
-        # Transcribe
-        logger.info("Starting transcription...")
-        try:
-            result = model.transcribe(audio_data, fp16=False)
-            logger.info("Transcription completed successfully")
             
-            # Ensure the result contains the expected fields
-            if not isinstance(result, dict) or "text" not in result:
-                raise ValueError("Unexpected result format from Whisper model")
-                
+            # Transcribe
+            logger.info("Starting transcription...")
+            segments, info = model.transcribe(
+                audio_path,
+                language="en",  # Force English for better accuracy
+                beam_size=5
+            )
+            
+            # Combine segments into single text
+            transcription = " ".join([segment.text for segment in segments])
+            
+            # Save result
+            result_data = {
+                "text": transcription.strip(),
+                "language": info.language,
+                "duration": info.duration
+            }
+            
             # Write result
             with open(result_path, 'w') as f:
                 output_json = {
                     "status": "success",
-                    "text": result.get("text", ""), # Ensure text key exists
-                    "data": result # Store the full original whisper result
+                    "text": result_data["text"],
+                    "data": result_data
                 }
-                json.dump(output_json, f)
+                json.dump(output_json, f, indent=2)
             
             elapsed = time.time() - start_time
             logger.info(f"Transcription completed in {elapsed:.2f} seconds")
@@ -105,7 +104,11 @@ def main():
             error_msg = f"Transcription failed: {str(e)}"
             logger.error(error_msg)
             with open(result_path, 'w') as f:
-                json.dump({"error": error_msg, "traceback": traceback.format_exc()}, f)
+                json.dump({
+                    "status": "error",
+                    "error": error_msg,
+                    "traceback": traceback.format_exc()
+                }, f, indent=2)
             sys.exit(5)
             
     except Exception as e:
@@ -114,10 +117,18 @@ def main():
         logger.error(traceback.format_exc())
         try:
             with open(result_path, 'w') as f:
-                json.dump({"error": error_msg, "traceback": traceback.format_exc()}, f)
-        except:
+                json.dump({
+                    "status": "error",
+                    "error": error_msg,
+                    "traceback": traceback.format_exc()
+                }, f, indent=2)
+        except Exception as write_err:
             # If we can't write to the result file, at least print the error
-            print(json.dumps({"error": error_msg, "traceback": traceback.format_exc()}), file=sys.stderr)
+            print(json.dumps({
+                "status": "error",
+                "error": f"{error_msg}. Also failed to write error file: {str(write_err)}",
+                "original_traceback": traceback.format_exc()
+            }), file=sys.stderr)
         sys.exit(99)
     
     logger.info("Worker process completed successfully")

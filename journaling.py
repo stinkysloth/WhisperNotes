@@ -35,13 +35,8 @@ class JournalingManager:
         else:
             self.output_dir = output_dir
             
-<<<<<<< HEAD
-        # Set default prompts
-        self.default_summary_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
-=======
-        # Set default summary prompt
+        # Set default summary prompt (updated version)
         self.default_summary_prompt = "Summarize the following text in 1-2 sentences. Only output the summary, with no preamble or extra instructions."
->>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
         self.summary_prompt = summary_prompt if summary_prompt else self.default_summary_prompt
         
         # Default formatting prompt
@@ -291,26 +286,6 @@ class JournalingManager:
             str: Path to the saved entry file
         """
         try:
-<<<<<<< HEAD
- HEAD
-            # Parse the timestamp to create a formatted time string
-            timestamp_obj = datetime.datetime.strptime(entry['timestamp'], "%Y-%m-%d %H:%M:%S")
-            time_str = timestamp_obj.strftime("%I:%M:%S %p")
-            
-            # Create filename based on date and time
-            entry_filename = f"{entry['date']} - {time_str} - Audio Journal Entry.md"
-
-            # Check if we should use a template
-            if entry.get('template'):
-                return self._save_entry_with_template(entry)
-            
-            # Parse the timestamp to create a formatted time string
-            timestamp_obj = datetime.datetime.strptime(entry['timestamp'], "%Y-%m-%d %H:%M:%S")
-            time_str = timestamp_obj.strftime("%I:%M:%S %p")
-            
-            # Create filename based on date and time
-            entry_filename = f"{entry['date']} - {time_str} - Audio Journal Entry.md"
-=======
             # Only use template if it is a non-empty string
             template = entry.get('template')
             if template and isinstance(template, str) and template.strip():
@@ -319,7 +294,6 @@ class JournalingManager:
             # Create filename based on date, ensure uniqueness with a counter if needed
             base_filename = f"{entry['date']} - Audio Journal Entry"
             entry_filename = f"{base_filename}.md"
->>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
             entry_path = os.path.join(self.entries_dir, entry_filename)
             counter = 2
             while os.path.exists(entry_path):
@@ -328,12 +302,7 @@ class JournalingManager:
                 counter += 1
 
             with open(entry_path, 'w', encoding='utf-8') as f:
-<<<<<<< HEAD
-                f.write(f"# Audio Journal Entry - {entry['date']} {time_str}\n\n")
-                
-=======
                 f.write(f"# Audio Journal Entry - {entry['timestamp']}\n\n")
->>>>>>> e24dbd5 (Update TASK.md, journaling.py, and tray.py for latest journaling and audio fixes)
                 f.write("### Summary\n")
                 f.write(f"{entry['summary']}\n\n")
                 f.write("### Transcript\n")
