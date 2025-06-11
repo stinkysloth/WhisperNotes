@@ -1,10 +1,28 @@
-PySide6>=6.5.0,<6.7.0
-openai-whisper==20231117
-pyaudio==0.2.13
-pynput==1.7.6
-keyboard==0.13.5
-numpy==1.26.0
-sounddevice==0.4.6
-soundfile==0.12.1
-librosa==0.10.1
-ollama==0.1.5
+# Core dependencies
+PySide6>=6.9.0
+faster-whisper>=1.0.0  # Faster implementation of Whisper with Python 3.13 support
+torch>=2.0.0  # Required for faster-whisper
+numpy>=1.26.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+librosa>=0.10.1
+ollama>=0.1.5
+
+# Platform-specific dependencies for auto-paste
+pyobjc-core>=9.2; sys_platform == 'darwin'
+pyobjc-framework-Quartz>=9.2; sys_platform == 'darwin'
+
+# Windows specific
+typing-extensions>=4.0.0; sys_platform == 'win32'
+pywin32>=306; sys_platform == 'win32' and python_version < '3.13'
+pywinauto>=0.6.8; sys_platform == 'win32' and python_version < '3.13'
+uiautomation>=2.0.18; sys_platform == 'win32' and python_version < '3.13'
+
+# Linux specific
+python-xlib>=0.33; sys_platform == 'linux' and platform_python_implementation != 'PyPy' and python_version < '3.13'
+PyGObject>=3.42.0; sys_platform == 'linux' and platform_python_implementation != 'PyPy' and python_version < '3.13'
+
+# Optional dependencies with version constraints
+pyaudio>=0.2.13; python_version < '3.13'
+pynput>=1.7.6; python_version < '3.13'
+keyboard>=0.13.5; python_version < '3.13' and sys_platform != 'darwin'  # keyboard module not recommended on macOS

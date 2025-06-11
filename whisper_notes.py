@@ -1,8 +1,76 @@
+ HEAD
+
+"""
+WhisperNotes Main Application Module
+
+
+This module implements the main application logic for WhisperNotes, a cross-platform (macOS, Windows, Linux) desktop voice journaling and note-taking app using PySide6 (Qt), Whisper ASR, and system tray integration.
+
+Key Responsibilities:
+---------------------
+- Application entry point and event loop
+- System tray icon, actions, and notifications
+- Global hotkey registration (Cmd+Shift+R/J, Cmd+Q)
+- Audio recording and transcription using Whisper
+- Journaling integration and clipboard management
+- Thread-safe communication via Qt signals/slots
+- Robust error handling and resource cleanup
+
+Architecture & Structure:
+------------------------
+- Platform-specific clipboard and accessibility support
+- Worker threads for recording, transcription, and model loading
+- Main `WhisperNotes` class orchestrates UI, hotkeys, and threading
+- Modular fallback logic for missing dependencies (journaling, exceptions)
+- Mutex-protected critical sections for thread safety
+- Modular cleanup helpers for graceful shutdown
+
+Constraints & Developer Notes:
+-----------------------------
+- Requires PySide6, pynput, sounddevice, librosa, and Whisper
+- On macOS, terminal/Python must have Accessibility permissions for hotkeys
+- All UI and signal/slot connections must be made from the main Qt thread
+- File should be split into smaller modules if it exceeds 500 lines (see refactor plan at bottom)
+- See README.md for setup, permissions, and troubleshooting
+
+"""
+ 2819f8b (feat: Add task for batch audio import feature)
 #!/usr/bin/env python3
 import os
 import sys
-print("Main process Python executable:", sys.executable)
 import time
+import platform
+from PySide6.QtCore import QObject
+print("Main process Python executable:", sys.executable)
+
+# Import platform-specific modules for auto-paste
+if sys.platform == 'darwin':  # macOS
+    import Quartz
+    from AppKit import NSApplication, NSApp
+    from PySide6.QtCore import QTimer
+elif sys.platform == 'win32':  # Windows
+    import win32clipboard
+    import win32con
+    import win32gui
+    import win32api
+    import win32process
+    import win32ui
+    from ctypes import wintypes
+    import ctypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    from pywinauto import Application
+    import uiautomation as auto
+else:  # Linux
+    import subprocess
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk, Gdk, GdkX11  # noqa: F401
+    import Xlib.display
+    import Xlib.XK
+    import Xlib.X
+    import Xlib.ext.xtest
+    import Xlib.error
 import logging
 import threading
 import numpy as np
@@ -14,10 +82,62 @@ from pynput import keyboard
 import subprocess
 import tempfile
 import json
+ HEAD
+< HEAD:whisper_notes.py
 from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, QFileDialog,
                                QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton, QDialogButtonBox)
+=
+
+ 2819f8b (feat: Add task for batch audio import feature)
+import traceback
+from typing import Optional, Dict, Any
+
+from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, 
+                             QFileDialog, QDialog, QVBoxLayout, QTextEdit, 
+                             QDialogButtonBox, QLabel)
+ HEAD
+> 2819f8b (feat: Add task for batch audio import feature):archive/whisper_notes.py.bak
+
+from PySide6.QtCore import Signal, Slot
+ 2819f8b (feat: Add task for batch audio import feature)
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
-from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QMutex, QCoreApplication, QSettings, QStandardPaths
+from PySide6.QtCore import (QObject, QThread, Signal, Qt, QTimer, QMutex, 
+                           QCoreApplication, QSettings, QStandardPaths)
+
+ HEAD
+
+# Modular imports
+from tray import TrayManager
+from hotkeys import HotkeyManager
+from audio import RecordingThread
+from transcription import ModelLoader, TranscriptionWorker
+from journaling import JournalingManager
+
+ 2819f8b (feat: Add task for batch audio import feature)
+# Import custom exceptions
+try:
+    from exceptions import (
+        AudioRecordingError, AudioSaveError, TranscriptionError, ModelError,
+        JournalingError, FileSystemError, ConfigurationError, handle_error
+    )
+    CUSTOM_EXCEPTIONS_AVAILABLE = True
+except ImportError:
+    # Fallback if custom exceptions aren't available
+    CUSTOM_EXCEPTIONS_AVAILABLE = False
+    logging.warning("Custom exceptions not found. Using basic error handling.")
+    
+    # Define basic exception classes for fallback
+    class AudioRecordingError(Exception): pass
+    class AudioSaveError(Exception): pass
+    class TranscriptionError(Exception): pass
+    class ModelError(Exception): pass
+    class JournalingError(Exception): pass
+    class FileSystemError(Exception): pass
+    class ConfigurationError(Exception): pass
+    
+    def handle_error(error: Exception, context: str = "") -> str:
+        logging.error(f"Error in {context or 'unknown context'}: {str(error)}\n{traceback.format_exc()}")
+        return f"An error occurred: {str(error)}"
 
 # Import journaling module
 try:
@@ -32,14 +152,17 @@ except ImportError:
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,  # Changed to DEBUG for more verbose output
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("voice_typer.log"),
+        logging.FileHandler("whisper_notes.log"),
         logging.StreamHandler()
     ]
 )
+logger = logging.getLogger('WhisperNotes')
+logger.info("Logging system initialized")
 
+ HEAD
 class ModelLoader(QObject):
     """Worker for loading the Whisper model."""
     finished = Signal(object)
@@ -62,10 +185,14 @@ class ModelLoader(QObject):
             logging.error(error_msg, exc_info=True)
             self.error.emit(error_msg)
 
+# ModelLoader is now imported from transcription.py
+ 2819f8b (feat: Add task for batch audio import feature)
+
 
 # No longer needed: all transcription is now handled by an external subprocess
 
 
+ HEAD
 class TranscriptionWorker(QObject):
     """Worker for transcribing audio with Whisper via an external subprocess."""
     finished = Signal()
@@ -274,63 +401,94 @@ class RecordingThread(QThread):
     def run(self):
         """Record audio for up to max_duration seconds or until stopped."""
         try:
-            # Setup audio parameters
-            sample_rate = 44100
-            channels = 1
+            logging.debug("Starting audio recording")
+            self.audio_data = []
             
-            # Get available audio devices
+            def callback(indata, frames, time, status):
+                if status:
+                    logging.warning(f"Audio status: {status}")
+                    if status.input_overflow:
+                        logging.warning("Input overflow in audio stream")
+                        raise AudioRecordingError("Audio input overflow - system can't keep up with recording")
+                    elif status.input_error:
+                        raise AudioRecordingError("Error in audio input device")
+                        
+                if self.stop_flag:
+                    raise sd.CallbackStop()
+                    
+                if indata is not None and len(indata) > 0:
+                    self.audio_data.append(indata.copy())
+            
+            # Check if input device is available
             devices = sd.query_devices()
-            logging.info(f"Available audio devices: {len(devices)}")
+            if not devices:
+                raise AudioRecordingError("No audio input devices found")
+                
+            default_input = sd.default.device[0]
+            if default_input >= len(devices):
+                raise AudioRecordingError(f"Default input device {default_input} is out of range")
+                
+            device_info = devices[default_input]
+            if device_info['max_input_channels'] == 0:
+                raise AudioRecordingError("Default device has no input channels")
             
-            # Find default input device
-            default_device = sd.default.device[0]
-            device_info = devices[default_device]
-            logging.info(f"Using input device {default_device}: {device_info['name']}")
+            logging.info(f"Using audio input device: {device_info['name']} (sample rate: {device_info['default_samplerate']} Hz)")
             
-            # Record audio
-            logging.info(f"Recording audio for up to {self.max_duration} seconds...")
-            audio_data = sd.rec(
-                int(self.max_duration * sample_rate),
-                samplerate=sample_rate,
-                channels=channels,
-                dtype='float32'
-            )
-            
-            # Keep track of recording time
-            start_time = time.time()
-            
-            # Check for stop signal periodically
-            while not self.stop_flag and (time.time() - start_time) < self.max_duration:
-                # Check every 100ms
-                time.sleep(0.1)
-                # This won't affect the recording, which happens in another thread via sounddevice
-            
-            # Calculate how long we've been recording
-            elapsed_time = time.time() - start_time
-            
-            # Stop recording
-            sd.stop()
-            
-            # Trim audio data to actual recorded length
-            if elapsed_time < self.max_duration:
-                logging.info(f"Recording stopped after {elapsed_time:.2f} seconds")
-                frames_recorded = int(elapsed_time * sample_rate)
-                audio_data = audio_data[:frames_recorded]
-            else:
-                logging.info(f"Recording completed full {self.max_duration} seconds")
-            
-            # Convert to the format expected by Whisper
-            if sample_rate != 16000:
-                logging.info(f"Resampling from {sample_rate}Hz to 16000Hz...")
-                audio_data = librosa.resample(audio_data.squeeze(), orig_sr=sample_rate, target_sr=16000)
-            
-            # Emit the audio data
-            self.finished.emit(audio_data)
-            
+            # Start recording with a larger queue size
+            with sd.InputStream(
+                samplerate=16000,
+                channels=1,
+                dtype='float32',
+                callback=callback,
+                blocksize=4096,
+                device=None,  # Use default device
+                latency='high'  # Better for stability
+            ) as stream:
+                logging.debug("Audio stream started")
+                start_time = time.time()
+                
+                try:
+                    while not self.stop_flag and (time.time() - start_time) < self.max_duration:
+                        # Process events while waiting
+                        QCoreApplication.processEvents()
+                        time.sleep(0.1)  # Small sleep to prevent busy waiting
+                    
+                    logging.debug("Stopping audio recording")
+                    stream.stop()
+                    
+                    if not self.audio_data:
+                        raise AudioRecordingError("No audio data was recorded. Please check your microphone.")
+                        
+                    audio_data = np.concatenate(self.audio_data, axis=0)
+                    
+                    # Simple audio validation
+                    if np.max(np.abs(audio_data)) < 0.001:  # Very quiet audio
+                        logging.warning("Audio signal is very quiet - possible microphone issue")
+                    
+                    self.finished.emit(audio_data)
+                    
+                except sd.PortAudioError as e:
+                    raise AudioRecordingError(f"Audio device error: {str(e)}")
+                except Exception as e:
+                    raise AudioRecordingError(f"Error during recording: {str(e)}")
+                    
         except Exception as e:
-            error_msg = f"Error recording audio: {e}"
-            logging.error(error_msg, exc_info=True)
-            self.error.emit(error_msg)
+            # Use our custom error handling
+            error_context = "audio recording"
+            error_msg = handle_error(e, error_context)
+            
+            # Emit the error signal with the user-friendly message
+            if not isinstance(e, (AudioRecordingError, AudioSaveError)):
+                # If it's not one of our custom exceptions, wrap it in an AudioRecordingError
+                e = AudioRecordingError(str(e))
+                
+            if hasattr(self, 'error'):
+                self.error.emit(str(e))
+            else:
+                logging.error(f"Error signal not available: {error_msg}")
+                
+            # Re-raise the exception with the original traceback
+            raise
     
     def stop(self):
         """Signal the thread to stop recording."""
@@ -338,14 +496,52 @@ class RecordingThread(QThread):
         self.stop_flag = True
 
 
-class VoiceTyper(QObject):
-    """Main application class for Voice Typer."""
+class WhisperNotes(QObject):
+    """Main application class for Whisper Notes."""
+
+# TranscriptionWorker is now imported from transcription.py
+
+# RecordingThread is now imported from audio.py
+
+
+
+class WhisperNotes(QObject):
+    # Signals to safely show dialogs from main thread
+    show_error_dialog = Signal(str, str)
+    show_info_dialog = Signal(str, str)
+    show_warning_dialog = Signal(str, str)
+    show_config_dialog = Signal()
+
+    """
+    Main application class for WhisperNotes.
+
+    Orchestrates the system tray, hotkeys, audio recording, transcription,
+    journaling, and thread management. Handles all user interactions and
+    coordinates between UI and background workers. Entry point for the app logic.
+
+    Args:
+        app (QApplication): The main Qt application instance.
+
+    Constraints:
+        - All UI and signal/slot connections must be made from the main Qt thread.
+        - Platform-specific permissions may be required (see README).
+    """
+ 2819f8b (feat: Add task for batch audio import feature)
     toggle_recording_signal = Signal()
     toggle_journal_signal = Signal()
     quit_signal = Signal()
     
     def __init__(self, app):
         super().__init__()
+ HEAD
+
+        # Connect dialog signals to slots
+        self.show_error_dialog.connect(self._show_error_dialog_slot)
+        self.show_info_dialog.connect(self._show_info_dialog_slot)
+        self.show_warning_dialog.connect(self._show_warning_dialog_slot)
+        self.show_config_dialog.connect(self._show_config_dialog_slot)
+
+ 2819f8b (feat: Add task for batch audio import feature)
         self.app = app
         self.model = None
         self.recording_thread = None
@@ -357,19 +553,65 @@ class VoiceTyper(QObject):
         self.pressed_keys = set()
         self.journaling_mode = False  # Track if we're in journaling mode
         self.is_recording = False  # Track recording state
+        self.auto_paste_enabled = True  # Enable auto-paste by default
+ HEAD
         
+        # Initialize platform-specific settings
+        self._init_platform_specific()
+        
+
+
+        # Template system
+        from template_manager import TemplateManager
+        from template_config_dialog import TemplateConfigDialog
+        self.template_manager = TemplateManager()
+        self.TemplateConfigDialog = TemplateConfigDialog
+        
+        # Load template configurations and register hotkeys
+        self._load_template_configs()
+
+        # Initialize platform-specific settings
+        self._init_platform_specific()
+
+        # Define tray dialog handler before tray setup
+        def open_template_config_dialog():
+            """
+            Open the Template Configuration dialog from the tray menu.
+            """
+            # Emit signal to open config dialog on main thread
+            self.show_config_dialog.emit()
+        self.open_template_config_dialog = open_template_config_dialog
+
+        # Ensure tray and hotkeys are set up
+        logging.info("Setting up TrayManager in __init__")
+        self.tray_manager = TrayManager(
+            app=self.app,
+            parent=self,
+            on_record=self.toggle_recording,
+            on_journal=self.toggle_journal_mode,
+            on_quit=self.quit,
+            on_edit_prompt=self.prompt_edit_summary_prompt,
+            on_set_journal_dir=self.prompt_set_journal_dir,
+            on_configure_templates=self.open_template_config_dialog
+        )
+        logging.info("Setting up HotkeyManager in __init__")
+        self.hotkey_manager = HotkeyManager(
+            on_toggle_recording=self.toggle_recording,
+            on_toggle_journal=self.toggle_journal_mode,
+            on_quit=self.quit
+        )
+
         # Initialize QSettings for persistent output file path
-        self.settings = QSettings("VoiceTyper", "VoiceTyper")
+        self.settings = QSettings("WhisperNotes", "WhisperNotes")
         if not self.settings.contains("output_file"):
             documents_path = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
-            default_output = os.path.join(documents_path, "VoiceTyperTranscriptions.md")
+            default_output = os.path.join(documents_path, "WhisperNotesTranscriptions.md")
             self.settings.setValue("output_file", default_output)
         logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
-        
-        # Initialize journaling manager with directory and prompts from settings if available
+
+        # Initialize journaling manager with directory and prompt from settings if available
         journal_dir = self.settings.value("journal_dir")
         summary_prompt = self.settings.value("summary_prompt")
-        format_prompt = self.settings.value("format_prompt")
         
         if journal_dir and os.path.isdir(journal_dir):
             self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
@@ -382,6 +624,227 @@ class VoiceTyper(QObject):
             logging.info(f"Using default journal directory: {default_journal_dir}")
             # Save the default to settings
             self.settings.setValue("journal_dir", default_journal_dir)
+        
+        self.toggle_recording_signal.connect(self.toggle_recording)
+        self.toggle_journal_signal.connect(self.toggle_journal_mode)
+        self.quit_signal.connect(self.quit)
+
+        self.load_model()
+        self.setup_watchdog()
+
+        # Connect dialog signals to slots
+        self.show_error_dialog.connect(self._show_error_dialog_slot)
+        self.show_info_dialog.connect(self._show_info_dialog_slot)
+        self.show_warning_dialog.connect(self._show_warning_dialog_slot)
+        self.show_config_dialog.connect(self._show_config_dialog_slot)
+
+ 2819f8b (feat: Add task for batch audio import feature)
+    def _init_platform_specific(self):
+        """Initialize platform-specific settings and modules."""
+        if sys.platform == 'darwin':  # macOS
+            # Initialize NSApplication for macOS accessibility
+            self.nsapp = NSApplication.sharedApplication()
+        elif sys.platform == 'win32':  # Windows
+            # Initialize Windows-specific settings
+            self._init_windows()
+        # Linux initialization handled in the paste method
+        
+    def _init_windows(self):
+        """Initialize Windows-specific settings."""
+        # Ensure the process is DPI aware for high-DPI displays
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)  # Process DPI aware
+        except:
+            pass  # Not critical if this fails
+    
+    def paste_at_cursor(self, text):
+        """
+        Paste text at the current cursor position in the active window.
+        
+        Args:
+            text: The text to paste
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not text or not self.auto_paste_enabled:
+            return False
+            
+        try:
+            if sys.platform == 'darwin':  # macOS
+                return self._paste_macos(text)
+            elif sys.platform == 'win32':  # Windows
+                return self._paste_windows(text)
+            else:  # Linux
+                return self._paste_linux(text)
+        except Exception as e:
+            logging.error(f"Error pasting text at cursor: {e}")
+            return False
+    
+    def _paste_macos(self, text):
+        """Paste text at cursor position on macOS."""
+        try:
+            # Save current clipboard content
+            old_clipboard = QApplication.clipboard()
+            old_text = old_clipboard.text()
+            
+            # Set new text to clipboard
+            old_clipboard.setText(text)
+            
+            # Get the current application
+            system_events = Quartz.NSApplication.sharedApplication()
+            
+            # Simulate Cmd+V to paste
+            source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
+            
+            # Press Cmd down
+            cmd_down = Quartz.CGEventCreateKeyboardEvent(source, 0x37, True)
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, cmd_down)
+            
+            # Press V down
+            v_down = Quartz.CGEventCreateKeyboardEvent(source, 0x09, True)
+            Quartz.CGEventSetFlags(v_down, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, v_down)
+            
+            # Release V
+            v_up = Quartz.CGEventCreateKeyboardEvent(source, 0x09, False)
+            Quartz.CGEventSetFlags(v_up, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, v_up)
+            
+            # Release Cmd
+            cmd_up = Quartz.CGEventCreateKeyboardEvent(source, 0x37, False)
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, cmd_up)
+            
+            # Restore old clipboard after a short delay
+            QTimer.singleShot(1000, lambda: old_clipboard.setText(old_text))
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"macOS paste error: {e}")
+            return False
+    
+    def _paste_windows(self, text):
+        """Paste text at cursor position on Windows."""
+        try:
+            # Save current clipboard content
+            win32clipboard.OpenClipboard()
+            try:
+                old_data = win32clipboard.GetClipboardData()
+            except:
+                old_data = None
+            win32clipboard.CloseClipboard()
+            
+            # Set new text to clipboard
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+            win32clipboard.CloseClipboard()
+            
+            # Get the foreground window
+            hwnd = user32.GetForegroundWindow()
+            
+            # Send Ctrl+V to paste
+            user32.keybd_event(0x11, 0, 0, 0)  # Ctrl down
+            user32.keybd_event(0x56, 0, 0, 0)  # V down
+            user32.keybd_event(0x56, 0, 2, 0)  # V up
+            user32.keybd_event(0x11, 0, 2, 0)  # Ctrl up
+            
+            # Restore old clipboard after a short delay
+            def restore_clipboard():
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    if old_data is not None:
+                        win32clipboard.SetClipboardText(old_data, win32con.CF_UNICODETEXT)
+                    win32clipboard.CloseClipboard()
+                except:
+                    pass
+                    
+            QTimer.singleShot(1000, restore_clipboard)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Windows paste error: {e}")
+            return False
+    
+    def _paste_linux(self, text):
+        """Paste text at cursor position on Linux."""
+        try:
+            # Save current clipboard content
+            old_clipboard = QApplication.clipboard()
+            old_text = old_clipboard.text()
+            
+            # Set new text to clipboard
+            old_clipboard.setText(text)
+            
+            # Get display and root window
+            display = Xlib.display.Display()
+            root = display.screen().root
+            
+            # Get the current focus window
+            current_focus = display.get_input_focus().focus
+            
+            # Create the key press event
+            keycode = display.keysym_to_keycode(Xlib.XK.string_to_keysym('v'))
+            
+            # Press Control
+            Xlib.ext.xtest.fake_input(display, Xlib.X.KeyPress, 37, Xlib.X.CurrentTime, current_focus, 0, 0, 0)
+            
+            # Press V
+            Xlib.ext.xtest.fake_input(display, Xlib.X.KeyPress, keycode, Xlib.X.CurrentTime, current_focus, 0, 0, 0)
+            
+            # Release V
+            Xlib.ext.xtest.fake_input(display, Xlib.X.KeyRelease, keycode, Xlib.X.CurrentTime, current_focus, 0, 0, 0)
+            
+            # Release Control
+            Xlib.ext.xtest.fake_input(display, Xlib.X.KeyRelease, 37, Xlib.X.CurrentTime, current_focus, 0, 0, 0)
+            
+            display.sync()
+            display.close()
+            
+            # Restore old clipboard after a short delay
+            QTimer.singleShot(1000, lambda: old_clipboard.setText(old_text))
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Linux paste error: {e}")
+            return False
+        
+        # Initialize QSettings for persistent output file path
+        self.settings = QSettings("WhisperNotes", "WhisperNotes")
+        if not self.settings.contains("output_file"):
+            documents_path = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+            default_output = os.path.join(documents_path, "WhisperNotesTranscriptions.md")
+            self.settings.setValue("output_file", default_output)
+        logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
+        
+ HEAD
+        # Initialize journaling manager with directory and prompts from settings if available
+        journal_dir = self.settings.value("journal_dir")
+        summary_prompt = self.settings.value("summary_prompt")
+        format_prompt = self.settings.value("format_prompt")
+
+        # Initialize journaling manager with directory and prompt from settings if available
+        journal_dir = self.settings.value("journal_dir")
+        summary_prompt = self.settings.value("summary_prompt")
+ 2819f8b (feat: Add task for batch audio import feature)
+        
+        if journal_dir and os.path.isdir(journal_dir):
+            self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
+            logging.info(f"Using journal directory from settings: {journal_dir}")
+        else:
+            # Use default directory
+            home_dir = os.path.expanduser("~")
+            default_journal_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
+            self.journal_manager = JournalingManager(output_dir=default_journal_dir, summary_prompt=summary_prompt)
+            logging.info(f"Using default journal directory: {default_journal_dir}")
+            # Save the default to settings
+            self.settings.setValue("journal_dir", default_journal_dir)
+ HEAD
             
         # Set format prompt if available
         if format_prompt:
@@ -396,6 +859,9 @@ class VoiceTyper(QObject):
         self.setup_hotkeys()
         self.setup_watchdog()
     
+
+        
+ 2819f8b (feat: Add task for batch audio import feature)
     def setup_watchdog(self):
         """Setup a watchdog timer to periodically check the application state."""
         self.watchdog_timer = QTimer(self)
@@ -434,8 +900,103 @@ class VoiceTyper(QObject):
         """Handle when model is loaded."""
         self.model = model
         logging.info(f"Model 'base' loaded successfully.")
+ HEAD
         self.update_icon(False)
         
+    def toggle_recording(self):
+        """Toggle recording state."""
+
+        self.tray_manager.update_icon(False)
+
+    def toggle_recording(self):
+        """Toggle recording state."""
+        logging.info("[SLOT ENTRY] toggle_recording() called. is_recording=%s", self.is_recording)
+ 2819f8b (feat: Add task for batch audio import feature)
+        if self.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording()
+ HEAD
+            
+    def toggle_journal_mode(self):
+        """Toggle journaling mode and start/stop recording."""
+        if self.is_recording:
+            # If already recording, stop it
+            logging.info("Stopping recording in journal mode")
+            self.stop_recording()
+        else:
+            # Start recording in journal mode
+            self.journaling_mode = True
+            logging.info("Journal mode activated")
+            self.start_recording()
+            self.tray_icon.showMessage(
+
+
+    def start_recording(self):
+        """Start recording audio in a separate thread."""
+        logging.info("start_recording() called. Checking if thread can be started...")
+        if not hasattr(self, 'recording_thread') or not self.recording_thread or not self.recording_thread.isRunning():
+            logging.info("Starting recording...")
+            self.is_recording = True
+            self.last_recording_time = time.time()
+
+            # Update tray icon and tooltip only
+            self.tray_manager.update_icon(True)
+            self.tray_manager.tray_icon.setToolTip("Voice Typer (Recording...)")
+
+            # Create recording thread
+            self.recording_thread = RecordingThread()
+
+            # Connect signals
+            self.recording_thread.finished.connect(self.handle_recording_finished)
+            self.recording_thread.error.connect(self.handle_error)
+
+            # Start recording
+            self.recording_thread.start()
+        else:
+            logging.info("Recording thread already running or exists; not starting a new one.")
+
+    def toggle_journal_mode(self):
+        """Toggle journaling mode and start/stop recording."""
+        logging.info("[SLOT ENTRY] toggle_journal_mode() called. is_recording=%s", self.is_recording)
+        if self.is_recording:
+            logging.info("Stopping recording in journal mode")
+            self.stop_recording()
+        else:
+            self.journaling_mode = True
+            logging.info("Journal mode activated")
+            self.start_recording()
+            self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
+                "WhisperNotes",
+                "Journal mode activated. Recording will be saved as a journal entry.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+ HEAD
+            
+    def start_recording(self):
+        """Start recording audio in a separate thread."""
+        if not hasattr(self, 'recording_thread') or not self.recording_thread or not self.recording_thread.isRunning():
+            logging.info("Starting recording...")
+            self.is_recording = True
+            self.last_recording_time = time.time()
+            
+            # Update UI
+            self.toggle_action.setText("Stop Recording")
+            self.update_icon(True)
+            self.tray_icon.setToolTip("Voice Typer (Recording...)")
+            
+            # Create recording thread
+            self.recording_thread = RecordingThread()
+            
+            # Connect signals
+            self.recording_thread.finished.connect(self.handle_recording_finished)
+            self.recording_thread.error.connect(self.handle_error)
+            
+            # Start recording
+            self.recording_thread.start()
+    
     def update_icon(self, recording):
         """Update the system tray icon based on recording status."""
         try:
@@ -457,15 +1018,42 @@ class VoiceTyper(QObject):
         
     def setup_tray(self):
         """Setup the system tray icon and menu."""
-        self.tray_icon = QSystemTrayIcon(self)
-        self.update_icon(False)  # Set initial icon to not recording
+        try:
+            logger.debug("Setting up system tray...")
+            
+            # Ensure we have an application instance
+            if not QApplication.instance():
+                logger.error("No QApplication instance found!")
+                return
+                
+            # Check if system tray is available
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                logger.error("System tray is not available on this system")
+                # Show a message box if running in GUI mode
+                if QApplication.instance().topLevelWindows():
+                    QMessageBox.critical(None, "Error", "System tray is not available on this system")
+                return
+                
+            # Create and configure the tray icon
+            self.tray_icon = QSystemTrayIcon(self)
+            if not self.tray_icon.isSystemTrayAvailable():
+                logger.error("System tray is not available")
+                return
+                
+            logger.debug("Creating menu...")
+            menu = QMenu()
 
-        menu = QMenu()
+            # Add status indicator
+            self.status_action = QAction("Status: Idle", self)
+            self.status_action.setEnabled(False)
+            menu.addAction(self.status_action)
 
-        self.status_action = QAction("Status: Idle", self)
-        self.status_action.setEnabled(False)
-        menu.addAction(self.status_action)
+            # Add recording actions
+            self.toggle_action = QAction("Start Recording (Cmd+Shift+R)", self)
+            self.toggle_action.triggered.connect(self.toggle_recording)
+            menu.addAction(self.toggle_action)
 
+< HEAD:whisper_notes.py
         self.toggle_action = QAction("Start Recording (Cmd+Shift+R)", self)
         self.toggle_action.triggered.connect(self.toggle_recording)
         menu.addAction(self.toggle_action)
@@ -511,18 +1099,73 @@ class VoiceTyper(QObject):
         hotkey_settings_menu.addAction(set_journal_hotkey_action)
         
         menu.addMenu(hotkey_settings_menu)
+=
+            journal_action = QAction("Start Journal Entry (Cmd+Shift+J)", self)
+            journal_action.triggered.connect(self.toggle_journal_mode)
+            menu.addAction(journal_action)
+> 2819f8b (feat: Add task for batch audio import feature):archive/whisper_notes.py.bak
 
-        menu.addSeparator()
+            view_journal_action = QAction("View Journal", self)
+            view_journal_action.triggered.connect(lambda: self.view_journal())
+            menu.addAction(view_journal_action)
 
-        quit_action = QAction("Quit Voice Typer (Cmd+Q)", self)
-        quit_action.triggered.connect(self.quit)  # Connect to the existing quit method
-        menu.addAction(quit_action)
+            menu.addSeparator()
 
-        self.tray_icon.setContextMenu(menu)
-        self.tray_icon.show()
+            # Add settings submenu
+            settings_menu = menu.addMenu("Settings")
+            
+            # Add output file setting
+            output_file_action = QAction("Set Output File...", self)
+            output_file_action.triggered.connect(self.prompt_set_output_file)
+            settings_menu.addAction(output_file_action)
+            
+            # Add journal directory setting
+            journal_dir_action = QAction("Set Journal Directory...", self)
+            journal_dir_action.triggered.connect(self.prompt_set_journal_dir)
+            settings_menu.addAction(journal_dir_action)
+            
+            # Add edit summary prompt action
+            edit_prompt_action = QAction("Edit Summary Prompt...", self)
+            edit_prompt_action.triggered.connect(self.prompt_edit_summary_prompt)
+            settings_menu.addAction(edit_prompt_action)
 
-        # Connect tray icon activation for showing status or simple interaction
-        # self.tray_icon.activated.connect(self.on_tray_icon_activated) # Ensure on_tray_icon_activated exists or remove
+            menu.addSeparator()
+
+            # Add quit action
+            quit_action = QAction("Quit WhisperNotes (Cmd+Q)", self)
+            quit_action.triggered.connect(self.quit)
+            menu.addAction(quit_action)
+
+            # Set the menu and show the icon
+            self.tray_icon.setContextMenu(menu)
+            
+            # Set initial icon
+            self.update_icon(False)
+            
+            # Show the tray icon
+            if not self.tray_icon.isVisible():
+                logger.debug("Showing tray icon...")
+                self.tray_icon.show()
+                
+                # Add a small delay and check again
+                QTimer.singleShot(1000, self.check_tray_visibility)
+                
+            logger.info("System tray setup complete")
+            
+        except Exception as e:
+            logger.error(f"Error setting up system tray: {e}", exc_info=True)
+            
+    def check_tray_visibility(self):
+        """Check if the tray icon is visible and show an error if not."""
+        if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
+            logger.error("Failed to show system tray icon")
+            # Show a message box if running in GUI mode
+            if QApplication.instance().topLevelWindows():
+                QMessageBox.critical(
+                    None, 
+                    "Error", 
+                    "Failed to show system tray icon. Please check your system tray settings."
+                )
 
     def setup_hotkeys(self):
         """Setup global hotkeys for toggling recording, journaling, and quitting."""
@@ -674,11 +1317,18 @@ class VoiceTyper(QObject):
             # logging.debug(f"Key {key} not in pressed_keys to remove.")
             pass
 
+
+        
+ 2819f8b (feat: Add task for batch audio import feature)
     def handle_recording_finished(self, audio_data):
         """Handle the recorded audio data."""
         if audio_data is None or len(audio_data) == 0:
             logging.warning("No audio data to process.")
+ HEAD
             self.update_icon(False)
+
+            self.tray_manager.update_icon(False)
+ 2819f8b (feat: Add task for batch audio import feature)
             return
             
         # Store audio data for journaling if needed
@@ -686,20 +1336,28 @@ class VoiceTyper(QObject):
         logging.info(f"Recording finished, audio data shape: {audio_data.shape if hasattr(audio_data, 'shape') else 'unknown'}")
         
         # Update UI to show we're no longer recording
+ HEAD
         self.update_icon(False)
         
         # Show transcription in progress notification
         mode_text = "journal entry" if self.journaling_mode else "transcription"
         self.tray_icon.showMessage(
+
+        self.tray_manager.update_icon(False)
+        
+        # Show transcription in progress notification
+        mode_text = "journal entry" if self.journaling_mode else "transcription"
+        self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
             "Voice Typer", 
             f"Transcribing audio for {mode_text}...", 
-            QSystemTrayIcon.Information, 
+            QSystemTrayIcon.MessageIcon.Information, 
             2000
         )
 
         # Ensure previous transcriber and thread are cleaned up if they somehow exist
         if self.transcriber is not None or self.transcription_thread is not None:
-            logging.warning("[VoiceTyper] Previous transcriber/thread not None, attempting to clean up.")
+            logging.warning("[WhisperNotes] Previous transcriber/thread not None, attempting to clean up.")
             if self.transcription_thread and self.transcription_thread.isRunning():
                 self.transcription_thread.quit()
                 self.transcription_thread.wait(1000) # Wait a bit
@@ -713,7 +1371,7 @@ class VoiceTyper(QObject):
 
         # Connect signals
         self.transcription_thread.started.connect(self.transcriber.run)
-        self.transcription_thread.started.connect(lambda: logging.info("[VoiceTyper] transcription_thread 'started' SIGNAL EMITTED."))
+        self.transcription_thread.started.connect(lambda: logging.info("[WhisperNotes] transcription_thread 'started' SIGNAL EMITTED."))
         
         self.transcriber.finished.connect(self.transcription_thread.quit)
         self.transcriber.finished.connect(self.transcriber.deleteLater)
@@ -725,15 +1383,28 @@ class VoiceTyper(QObject):
         self.transcriber.transcription_ready.connect(self.handle_transcription)
         self.transcriber.error.connect(self.handle_error)
         
-        logging.info("[VoiceTyper] About to call self.transcription_thread.start()...")
+        logging.info("[WhisperNotes] About to call self.transcription_thread.start()...")
         self.transcription_thread.start()
-        logging.info("[VoiceTyper] Call to self.transcription_thread.start() returned.")
+        logging.info("[WhisperNotes] Call to self.transcription_thread.start() returned.")
+ HEAD
+
+        
+    def _clear_transcriber_references(self):
+        """Clear references to the transcriber worker."""
+        logging.debug("Clearing transcriber references")
+        self.transcriber = None
+        
+    def _clear_transcription_thread_references(self):
+        """Clear references to the transcription thread."""
+        logging.debug("Clearing transcription thread references")
+        self.transcription_thread = None
+ 2819f8b (feat: Add task for batch audio import feature)
 
     def prompt_set_output_file(self):
         """Prompts the user to select a Markdown file for saving transcriptions."""
         current_path = self.settings.value("output_file")
         # Suggest a filename and directory based on current settings or defaults
-        suggested_filename = os.path.basename(current_path) if current_path and not os.path.isdir(current_path) else "VoiceTyperTranscriptions.md"
+        suggested_filename = os.path.basename(current_path) if current_path and not os.path.isdir(current_path) else "WhisperNotesTranscriptions.md"
         suggested_dir = os.path.dirname(current_path) if current_path and os.path.isdir(os.path.dirname(current_path)) else QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
         
         initial_path = os.path.join(suggested_dir, suggested_filename)
@@ -747,17 +1418,29 @@ class VoiceTyper(QObject):
         if file_path:
             self.settings.setValue("output_file", file_path)
             logging.info(f"Output Markdown file changed to: {self.settings.value('output_file')}")
-            self.tray_icon.showMessage("Settings Updated", f"Transcription output file set to:\n{file_path}", QSystemTrayIcon.Information, 3000)
+ HEAD
+            self.tray_icon.showMessage("Settings Updated", f"Transcription output file set to:\n{file_path}", QSystemTrayIcon.MessageIcon.Information, 3000)
             
     def prompt_set_journal_dir(self):
         """Prompts the user to select a directory for saving journal entries."""
+
+            self.tray_manager.tray_icon.showMessage("Settings Updated", f"Transcription output file set to:\n{file_path}", QSystemTrayIcon.MessageIcon.Information, 3000)
+            
+    def prompt_set_journal_dir(self):
+        """Prompts the user to select a directory for saving journal entries."""
+        # This method is only called from the tray (main thread), so safe to show dialog here
+ 2819f8b (feat: Add task for batch audio import feature)
         # Get current journal directory from settings or use default
         current_dir = self.settings.value("journal_dir")
         if not current_dir:
             # Default to ~/Documents/Personal/Audio Journal/
             home_dir = os.path.expanduser("~")
             current_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
+ HEAD
             
+
+        
+ 2819f8b (feat: Add task for batch audio import feature)
         # Open directory selection dialog
         journal_dir = QFileDialog.getExistingDirectory(
             None,
@@ -776,7 +1459,11 @@ class VoiceTyper(QObject):
             self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
             
             # Show confirmation to user
+ HEAD
             self.tray_icon.showMessage(
+
+            self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
                 "Settings Updated", 
                 f"Journal directory set to:\n{journal_dir}", 
                 QSystemTrayIcon.Information, 
@@ -785,8 +1472,24 @@ class VoiceTyper(QObject):
             
     def prompt_edit_summary_prompt(self):
         """Opens a dialog to edit the summary prompt template used for journal entries."""
+ HEAD
+
+        # This method is only called from the tray (main thread), so safe to show dialog here
+ 2819f8b (feat: Add task for batch audio import feature)
         # Get current summary prompt from settings or use default
-        default_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
+        default_prompt = """Analyze the following journal entry and provide a clear, structured summary. Focus on identifying the main themes, emotional tone, and key points. Maintain a professional yet empathetic tone in your analysis.
+
+Key elements to include:
+1. Main Themes: 2-3 primary topics or recurring subjects
+2. Emotional Tone: Note any strong emotions or mood shifts
+3. Key Points: 3-5 significant points or insights
+4. Action Items: Any mentioned tasks, decisions, or follow-ups
+5. Notable Details: Important names, dates, or specific references
+
+If any sections are unclear due to audio quality, note: "[Section unclear due to audio quality]" and continue with the analysis. If the entry is largely inaudible, state: "The audio quality is too poor for meaningful analysis."
+
+Journal Entry:
+{transcription}"""
         current_prompt = self.settings.value("summary_prompt", default_prompt)
         
         # Create dialog
@@ -796,56 +1499,50 @@ class VoiceTyper(QObject):
         dialog.setMinimumHeight(300)
         
         # Create layout
-        layout = QVBoxLayout(dialog)
+        layout = QVBoxLayout()
         
-        # Add explanation label
-        explanation = QLabel(
-            "Customize the prompt used to generate summaries for journal entries. "
-            "You can include personal context like your name or background to make summaries more relevant. "
-            "The transcript will be appended to the end of this prompt."
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
+        # Add label
+        label = QLabel("Edit the summary prompt. Use {transcription} as a placeholder for the transcription text:")
+        layout.addWidget(label)
         
-        # Add text edit for prompt
-        prompt_edit = QTextEdit(dialog)
-        prompt_edit.setPlainText(current_prompt)
-        layout.addWidget(prompt_edit)
+        # Add text edit
+        text_edit = QTextEdit()
+        text_edit.setPlainText(current_prompt)
+        text_edit.setAcceptRichText(False)
+        layout.addWidget(text_edit)
         
-        # Add reset button
-        reset_button = QPushButton("Reset to Default", dialog)
-        reset_button.clicked.connect(lambda: prompt_edit.setPlainText(default_prompt))
-        
-        # Add buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        # Add button box
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
         
-        # Add reset button to button box layout
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(reset_button)
-        button_layout.addStretch()
-        button_layout.addWidget(button_box)
-        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
         
-        # Show dialog and process result
-        if dialog.exec_() == QDialog.Accepted:
-            new_prompt = prompt_edit.toPlainText().strip()
-            if new_prompt:
+        # Show dialog and get result
+        if dialog.exec() == QDialog.Accepted:
+            new_prompt = text_edit.toPlainText().strip()
+            if new_prompt and new_prompt != current_prompt:
                 # Save to settings
                 self.settings.setValue("summary_prompt", new_prompt)
                 logging.info("Summary prompt updated")
                 
-                # Update the journal manager with the new prompt
-                self.journal_manager.set_summary_prompt(new_prompt)
+                # Update the journal manager with the new prompt if it exists
+                if hasattr(self, 'journal_manager') and self.journal_manager:
+                    self.journal_manager.set_summary_prompt(new_prompt)
                 
                 # Show confirmation to user
+ HEAD
                 self.tray_icon.showMessage(
+
+                self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
                     "Settings Updated", 
                     "Summary prompt has been updated.", 
                     QSystemTrayIcon.Information, 
                     3000
                 )
+ HEAD
                 
     def prompt_edit_format_prompt(self):
         """Opens a dialog to edit the format prompt template used for journal entries."""
@@ -1076,143 +1773,281 @@ class VoiceTyper(QObject):
                     )
     
     def handle_transcription(self, text):
-        """Handle the transcribed text."""
+
+    
+    def handle_transcription(self, text):
+        # If called from a worker thread, use signals for dialogs
+ 2819f8b (feat: Add task for batch audio import feature)
+        """
+        Handle the transcribed text.
+        
+        Args:
+            text: The transcribed text to process and save
+            
+        Returns:
+            bool: True if transcription was handled successfully, False otherwise
+        """
         if not text or not text.strip():
             logging.warning("Empty transcription received")
+ HEAD
             self.tray_icon.showMessage(
-                "Voice Typer", 
-                "No speech detected. Please try again.", 
-                QSystemTrayIcon.Warning, 
+                "Empty Transcription",
+                "No speech was detected. Please try again.",
+                QSystemTrayIcon.MessageIcon.Warning,
                 3000
             )
-            return
+
+            self.show_warning_dialog.emit("Empty Transcription", "No speech was detected. Please try again.")
+ 2819f8b (feat: Add task for batch audio import feature)
+            return False
 
         try:
-            if self.journaling_mode:
-                # Handle as journal entry
-                self.handle_journal_entry(text)
-            else:
-                # Regular transcription mode
-                # Get the output file path from settings
-                output_file = self.settings.value("output_file")
-                if not output_file:
-                    logging.error("No output file configured")
+            logging.info(f"Transcription received (length: {len(text)} chars)")
+            
+            # Get current timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+            
+            # Format the entry with timestamp
+            entry = f"{timestamp} - {text}\n\n"
+            
+            # Save to the configured output file
+            output_file = self.settings.value("output_file")
+            if not output_file:
+                raise ConfigurationError("No output file configured")
+                    
+            # Ensure the directory exists
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except OSError as e:
+                    raise FileSystemError(f"Could not create directory {output_dir}: {str(e)}")
+            
+            # Write to the file atomically
+            temp_file = f"{output_file}.tmp"
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(entry)
+                
+                # On POSIX systems, this is atomic
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+                os.rename(temp_file, output_file)
+                
+                logging.info(f"Appended transcription to {output_file}")
+                
+                # Try to auto-paste the transcription at cursor position
+                paste_success = self.paste_at_cursor(text)
+                
+                # Fallback to clipboard if auto-paste fails or isn't enabled
+                if not paste_success:
+                    try:
+                        clipboard = QApplication.clipboard()
+                        if clipboard:
+                            clipboard.setText(text)
+                            logging.info("Transcription copied to clipboard")
+                            
+                            # Show notification that text was copied to clipboard
+ HEAD
+                            self.tray_icon.showMessage(
+
+                            self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
+                                "Transcription Complete",
+                                "Your transcription has been saved and copied to clipboard.",
+                                QSystemTrayIcon.MessageIcon.Information,
+                                3000
+                            )
+                    except Exception as e:
+                        logging.warning(f"Failed to copy to clipboard: {e}")
+                        
+                        # Show error notification
+ HEAD
+                        self.tray_icon.showMessage(
+                            "Transcription Saved",
+                            "Transcription completed but could not paste or copy to clipboard.",
+                            QSystemTrayIcon.MessageIcon.Warning,
+                            3000
+                        )
+                else:
+                    # Show success notification for auto-paste
                     self.tray_icon.showMessage(
-                        "Voice Typer", 
-                        "No output file configured. Please set an output file.", 
-                        QSystemTrayIcon.Critical, 
-                        5000
+
+                        self.show_error_dialog.emit("Transcription Saved", "Transcription completed but could not paste or copy to clipboard.")
+                else:
+                    # Show success notification for auto-paste
+                    self.tray_manager.tray_icon.showMessage(
+ 2819f8b (feat: Add task for batch audio import feature)
+                        "Transcription Complete",
+                        "Your transcription has been pasted at cursor position.",
+                        QSystemTrayIcon.MessageIcon.Information,
+                        3000
                     )
-                    return
-
-                # Ensure the output directory exists
-                output_dir = os.path.dirname(output_file)
-                os.makedirs(output_dir, exist_ok=True)
-
-                # Format the transcription with timestamp
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                formatted_text = f"## {timestamp}\n\n{text}\n\n---\n\n"
-
-                # Append to the output file
-                with open(output_file, 'a', encoding='utf-8') as f:
-                    f.write(formatted_text)
-
-                # Type the text using keyboard module
-                import keyboard as kb
-                kb.write(text)
-
-                # Show success notification
+                
+                # If we're in journaling mode, create a journal entry
+                if hasattr(self, 'journaling_mode') and self.journaling_mode:
+                    self.handle_journal_entry(text)
+                
+                return True
+                    
+            except (IOError, OSError) as e:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                raise FileSystemError(f"Failed to write to {output_file}: {str(e)}")
+            
+        except Exception as e:
+            if not isinstance(e, (FileSystemError, ConfigurationError)):
+                e = FileSystemError(f"Failed to save transcription: {str(e)}")
+            
+            # Use our custom error handling
+            error_msg = handle_error(e, "transcription handling")
+            
+            # Show error to user
+ HEAD
+            try:
                 self.tray_icon.showMessage(
-                    "Voice Typer", 
-                    f"Transcription saved to {output_file}", 
-                    QSystemTrayIcon.Information, 
+                    "Error",
+                    error_msg,
+                    QSystemTrayIcon.Critical,
+                    5000
+                )
+            except Exception as ui_error:
+                logging.error(f"Failed to show error message: {ui_error}")
+
+            self.show_error_dialog.emit("Error", error_msg)
+ 2819f8b (feat: Add task for batch audio import feature)
+            
+            # Log the error
+            logging.error(f"Error in handle_transcription: {str(e)}", exc_info=True)
+            return False
+
+
+    def handle_journal_entry(self, text):
+        """
+        Handle creating a journal entry with the transcribed text.
+        
+        Args:
+            text: The transcribed text to include in the journal entry
+            
+        Returns:
+            dict: The created journal entry if successful
+            
+        Raises:
+            JournalingError: If there's an error creating the journal entry
+            ConfigurationError: If the journal manager is not properly initialized
+            ValueError: If no text is provided for the journal entry
+        """
+        try:
+            if not hasattr(self, 'journal_manager') or not self.journal_manager:
+                raise ConfigurationError("Journal manager is not properly initialized")
+            
+            if not text or not text.strip():
+                raise ValueError("No text provided for journal entry")
+                
+            logging.info("Creating journal entry...")
+            
+            try:
+ HEAD
+                # Create a journal entry with the transcribed text
+                entry = self.journal_manager.create_journal_entry(text)
+                
+                if not entry or 'error' in entry:
+                    error_msg = entry.get('error', 'Unknown error') if isinstance(entry, dict) else 'Unknown error'
+                    raise JournalingError(f"Failed to create journal entry: {error_msg}")
+
+                # Get the active template name if any
+                active_template = self.journal_manager.active_template
+                template_name = active_template if active_template else None
+                
+                # Create a journal entry with the transcribed text and template
+                entry_path = self.journal_manager.create_journal_entry(text, template_name=template_name)
+                
+                if not entry_path:
+                    raise JournalingError("Failed to create journal entry: No entry path returned")
+ 2819f8b (feat: Add task for batch audio import feature)
+                
+                # Reset journaling mode
+                self.journaling_mode = False
+                
+ HEAD
+                # Update the tray icon to show we're back to normal mode
+                self.update_icon(False)
+                
+                logging.info(f"Journal entry created: {entry.get('id', 'unknown')}")
+                
+                # Show a notification
+                self.tray_icon.showMessage(
+                    "Journal Entry Created",
+                    "Your journal entry has been saved.",
+
+                # Reset the active template and custom settings
+                self._reset_active_template()
+                
+                # Update the tray icon to show we're back to normal mode
+                self.tray_manager.update_icon(False)
+                
+                logging.info(f"Journal entry created: {os.path.basename(entry_path)}")
+                
+                # Show a notification with template info if applicable
+                notification_title = "Journal Entry Created"
+                notification_message = "Your journal entry has been saved."
+                
+                if template_name:
+                    notification_message = f"Your journal entry has been saved using the '{template_name}' template."
+                
+                self.tray_manager.tray_icon.showMessage(
+                    notification_title,
+                    notification_message,
+ 2819f8b (feat: Add task for batch audio import feature)
+                    QSystemTrayIcon.MessageIcon.Information,
                     3000
                 )
+                
+                # Reset UI elements
+                if hasattr(self, 'toggle_action'):
+                    self.toggle_action.setText("Start Recording")
+ HEAD
+                self.update_icon(False)
+                self.tray_icon.setToolTip("WhisperNotes - Ready")
+                
+                return entry
 
+                self.tray_manager.update_icon(False)
+                self.tray_manager.tray_icon.setToolTip("WhisperNotes - Ready")
+                
+                return {"entry_path": entry_path, "template": template_name}
+ 2819f8b (feat: Add task for batch audio import feature)
+                
+            except Exception as e:
+                if not isinstance(e, JournalingError):
+                    raise JournalingError(f"Failed to create journal entry: {str(e)}")
+                raise
+                
         except Exception as e:
-            logging.error(f"Error handling transcription: {e}", exc_info=True)
-            self.tray_icon.showMessage(
-                "Voice Typer", 
-                f"Error: {str(e)}", 
-                QSystemTrayIcon.Critical, 
-                5000
-            )
-    
-    def toggle_recording(self):
-        """Toggle recording state."""
-        if self.is_recording:
-            self.stop_recording()
-        else:
-            self.start_recording()
+            # Use our custom error handling
+            error_msg = handle_error(e, "journal entry creation")
             
-    def toggle_journal_mode(self):
-        """Toggle journaling mode and start/stop recording."""
-        if self.is_recording:
-            # If already recording, stop it
-            logging.info("Stopping recording in journal mode")
-            self.stop_recording()
-        else:
-            # Start recording in journal mode
-            self.journaling_mode = True
-            logging.info("Journal mode activated")
-            self.start_recording()
-            self.tray_icon.showMessage(
-                "Voice Typer",
-                "Journal mode activated. Recording will be saved as a journal entry.",
-                QSystemTrayIcon.Information,
-                2000
-            )
+            # Show error to user
+ HEAD
+            try:
+                self.tray_icon.showMessage(
+                    "Journal Error",
+                    error_msg,
+                    QSystemTrayIcon.MessageIcon.Critical,
+                    5000
+                )
+            except Exception as ui_error:
+                logging.error(f"Failed to show error message: {ui_error}")
+
+            self.show_error_dialog.emit("Journal Error", error_msg)
+ 2819f8b (feat: Add task for batch audio import feature)
             
-    def handle_journal_entry(self, text):
-        """Handle creating a journal entry with the transcribed text."""
-        try:
-            # Create journal entry
-            entry = self.journal_manager.create_journal_entry(
-                transcription=text,
-                audio_data=self.audio_data if hasattr(self, 'audio_data') else None
-            )
-            
-            # Show a notification
-            self.tray_icon.showMessage(
-                "Voice Typer",
-                f"Journal entry created with timestamp: {entry.get('timestamp', 'Unknown')}",
-                QSystemTrayIcon.Information,
-                3000
-            )
-            
-            # Reset journaling mode
-            self.journaling_mode = False
-            
-        except Exception as e:
-            logging.error(f"Error creating journal entry: {e}", exc_info=True)
-            self.tray_icon.showMessage(
-                "Voice Typer",
-                f"Error creating journal entry: {e}",
-                QSystemTrayIcon.Critical,
-                5000
-            )
-            
-    def start_recording(self):
-        """Start recording audio in a separate thread."""
-        if not hasattr(self, 'recording_thread') or not self.recording_thread or not self.recording_thread.isRunning():
-            logging.info("Starting recording...")
-            self.is_recording = True
-            self.last_recording_time = time.time()
-            
-            # Update UI
-            self.toggle_action.setText("Stop Recording")
-            self.update_icon(True)
-            self.tray_icon.setToolTip("Voice Typer (Recording...)")
-            
-            # Create recording thread
-            self.recording_thread = RecordingThread()
-            
-            # Connect signals
-            self.recording_thread.finished.connect(self.handle_recording_finished)
-            self.recording_thread.error.connect(self.handle_error)
-            
-            # Start recording
-            self.recording_thread.start()
+            # Log the error
+            logging.error(f"Error in handle_journal_entry: {str(e)}", exc_info=True)
+            raise
     
     def stop_recording(self):
         """Stop the recording thread."""
@@ -1223,10 +2058,16 @@ class VoiceTyper(QObject):
         logging.info("Stopping recording...")
         self.is_recording = False
         
+ HEAD
         # Update UI immediately on the main thread
         self.toggle_action.setText("Start Recording")
         self.update_icon(False)
         self.tray_icon.setToolTip("Voice Typer (Ready)")
+
+        # Update tray icon and tooltip only
+        self.tray_manager.update_icon(False)
+        self.tray_manager.tray_icon.setToolTip("Voice Typer (Ready)")
+ 2819f8b (feat: Add task for batch audio import feature)
         
         # Stop recording thread if it exists
         if self.recording_thread and self.recording_thread.isRunning():
@@ -1236,16 +2077,302 @@ class VoiceTyper(QObject):
     def handle_error(self, error_msg):
         """Handle errors from the worker thread."""
         logging.error(f"Error: {error_msg}")
-        self.tray_icon.showMessage("Error", error_msg, QSystemTrayIcon.Critical)
+ HEAD
+        self.tray_icon.showMessage("Error", error_msg, QSystemTrayIcon.MessageIcon.Critical)
         self.stop_recording()
     
     def _clear_transcriber_references(self):
-        logging.info("[VoiceTyper] Clearing self.transcriber reference after it finished and deleteLater was called.")
-        self.transcriber = None
+        """
+        Clean up and remove references to the transcriber worker.
+        This is called when the worker has finished and is being deleted.
+        """
+        try:
+            if not hasattr(self, 'transcriber') or self.transcriber is None:
+                return
+                
+            logging.info("Cleaning up transcriber worker references")
+            
+            # Store reference and clear immediately to prevent reentrancy
+            transcriber = self.transcriber
+            self.transcriber = None
+            
+            # If the transcriber is already deleted, just return
+            try:
+                if isinstance(transcriber, QObject) and not transcriber.isWidgetType():
+                    try:
+                        # Safely disconnect signals if they exist
+                        signal_names = ['error', 'finished', 'transcription_ready']
+                        for signal_name in signal_names:
+                            try:
+                                if hasattr(transcriber, signal_name):
+                                    signal = getattr(transcriber, signal_name, None)
+                                    if signal is not None and hasattr(signal, 'disconnect'):
+                                        try:
+                                            signal.disconnect()
+                                        except (RuntimeError, TypeError) as e:
+                                            # Signal might be already disconnected or invalid
+                                            logging.debug(f"Error disconnecting {signal_name} signal: {e}")
+                            except Exception as e:
+                                logging.warning(f"Error checking {signal_name} signal: {e}")
+                        
+                        # Request stop if the transcriber is still running
+                        if hasattr(transcriber, 'request_stop'):
+                            try:
+                                transcriber.request_stop()
+                            except Exception as e:
+                                logging.warning(f"Error requesting stop on transcriber: {e}")
+                        
+                        # Schedule the transcriber for deletion if it's a QObject
+                        if isinstance(transcriber, QObject):
+                            transcriber.deleteLater()
+                        
+                        logging.debug("Transcriber worker references cleared")
+                        
+                    except Exception as e:
+                        logging.error(f"Error during transcriber cleanup: {e}", exc_info=True)
+                else:
+                    logging.debug("Transcriber worker already deleted, skipping cleanup")
+                    
+            except Exception as e:
+                logging.error(f"Error checking if transcriber is deleted: {e}")
+                
+        except Exception as e:
+            logging.error(f"Unexpected error in _clear_transcriber_references: {e}", exc_info=True)
 
     def _clear_transcription_thread_references(self):
-        logging.info("[VoiceTyper] Clearing self.transcription_thread reference after it finished and deleteLater was called.")
-        self.transcription_thread = None
+        """
+        Clean up and remove references to the transcription thread.
+        This is called when the thread has finished and is being deleted.
+        """
+        try:
+            # Early return if no thread exists
+            if not hasattr(self, 'transcription_thread') or self.transcription_thread is None:
+                return
+                
+            logging.info("Cleaning up transcription thread references")
+            
+            # Store reference and clear immediately to prevent reentrancy
+            thread = self.transcription_thread
+            self.transcription_thread = None
+            
+            # If the thread is already deleted, just return
+            if not isinstance(thread, QObject) or thread.thread() is None:
+                logging.debug("Thread already deleted or invalid, skipping cleanup")
+                return
+            
+            try:
+                # Safely disconnect signals if they exist
+                self._disconnect_thread_signals(thread)
+                
+                # Request stop if possible
+                if hasattr(self, 'transcriber') and self.transcriber is not None:
+                    try:
+                        # Check if transcriber is valid and has request_stop method
+                        if (isinstance(self.transcriber, QObject) and 
+                            hasattr(self.transcriber, 'request_stop') and 
+                            callable(getattr(self.transcriber, 'request_stop'))):
+                            self.transcriber.request_stop()
+                    except Exception as e:
+                        logging.warning(f"Error requesting stop on transcriber: {e}")
+                
+                # Ensure the thread is properly terminated
+                if thread.isRunning():
+                    logging.warning("Transcription thread still running during cleanup")
+                    
+                    # First try to quit gracefully
+                    thread.quit()
+                    if not thread.wait(2000):  # Wait up to 2 seconds
+                        logging.warning("Thread did not exit gracefully, terminating...")
+                        try:
+                            thread.terminate()
+                            if not thread.wait(1000):  # Give it 1 more second
+                                logging.error("Failed to terminate transcription thread")
+                        except Exception as e:
+                            logging.error(f"Error terminating thread: {e}")
+                
+                # Schedule the thread for deletion if it's still valid
+                if isinstance(thread, QObject) and thread.thread() is not None:
+                    try:
+                        thread.deleteLater()
+                    except Exception as e:
+                        logging.error(f"Error scheduling thread for deletion: {e}")
+                
+                # Clear any remaining references
+                if hasattr(self, 'transcriber') and self.transcriber is not None:
+                    self.transcriber = None
+                
+                logging.debug("Transcription thread references cleared")
+                
+            except Exception as e:
+                logging.error(f"Error during transcription thread cleanup: {e}", exc_info=True)
+                
+        except Exception as e:
+            logging.error(f"Unexpected error in _clear_transcription_thread_references: {e}", exc_info=True)
+            
+    def _disconnect_thread_signals(self, thread):
+        """Safely disconnect signals from a thread."""
+        if not thread:
+            return
+            
+        signal_names = ['started', 'finished', 'error', 'transcription_ready']
+        
+        for signal_name in signal_names:
+            try:
+                if hasattr(thread, signal_name):
+                    signal = getattr(thread, signal_name)
+                    if signal:
+                        try:
+                            signal.disconnect()
+                        except (RuntimeError, TypeError) as e:
+                            # Signal might be already disconnected or invalid
+                            logging.debug(f"Error disconnecting {signal_name} signal: {e}")
+            except Exception as e:
+                logging.warning(f"Error checking {signal_name} signal: {e}")
+
+        self.show_error_dialog.emit("Error", error_msg)
+        self.stop_recording()
+    
+    @Slot(str, str)
+    def _show_error_dialog_slot(self, title, msg):
+        QMessageBox.critical(None, title, msg)
+
+    @Slot(str, str)
+    def _show_info_dialog_slot(self, title, msg):
+        QMessageBox.information(None, title, msg)
+
+    @Slot(str, str)
+    def _show_warning_dialog_slot(self, title, msg):
+        QMessageBox.warning(None, title, msg)
+
+    @Slot()
+    def _show_config_dialog_slot(self):
+        dialog = self.TemplateConfigDialog(parent=None, template_manager=self.template_manager, settings=self.settings)
+        result = dialog.exec()
+        
+        # If dialog was accepted, update template hotkeys
+        if result == QDialog.DialogCode.Accepted:
+            self._update_template_hotkeys()
+            
+    def _load_template_configs(self):
+        """
+        Load template configurations from settings and register hotkeys.
+        """
+        if not hasattr(self, 'settings') or not self.settings:
+            logging.warning("Settings not initialized, cannot load template configurations")
+            return
+            
+        config_str = self.settings.value("template_configs")
+        if config_str:
+            try:
+                template_configs = json.loads(config_str)
+                self.template_manager.load_template_configs(template_configs)
+                self._register_template_hotkeys(template_configs)
+                logging.info(f"Loaded {len(template_configs)} template configurations from settings")
+            except json.JSONDecodeError:
+                logging.error("Failed to parse template configurations from settings")
+                
+    def _update_template_hotkeys(self):
+        """
+        Update template hotkeys based on current template configurations.
+        """
+        # Get current template configurations
+        template_configs = self.template_manager.template_configs
+        
+        # Unregister all existing template hotkeys
+        self._unregister_all_template_hotkeys()
+        
+        # Register new template hotkeys
+        self._register_template_hotkeys(template_configs)
+        
+    def _register_template_hotkeys(self, template_configs):
+        """
+        Register hotkeys for templates based on their configurations.
+        
+        Args:
+            template_configs: Dictionary of template configurations
+        """
+        for template_name, config in template_configs.items():
+            hotkey = config.get("hotkey")
+            if hotkey and hotkey.strip():
+                # Register the hotkey with the hotkey manager
+                success = self.hotkey_manager.register_template_hotkey(
+                    hotkey_str=hotkey.strip(),
+                    template_name=template_name,
+                    callback=self._on_template_hotkey
+                )
+                if success:
+                    logging.info(f"Registered hotkey '{hotkey}' for template '{template_name}'")
+                else:
+                    logging.warning(f"Failed to register hotkey '{hotkey}' for template '{template_name}'")
+                    
+    def _unregister_all_template_hotkeys(self):
+        """
+        Unregister all template hotkeys.
+        """
+        # Get current template configurations
+        template_configs = self.template_manager.template_configs
+        
+        # Unregister each hotkey
+        for template_name, config in template_configs.items():
+            hotkey = config.get("hotkey")
+            if hotkey and hotkey.strip():
+                self.hotkey_manager.unregister_template_hotkey(hotkey.strip())
+                
+    def _on_template_hotkey(self, template_name):
+        """
+        Handle template hotkey press.
+        
+        Args:
+            template_name: Name of the template to use
+        """
+        logging.info(f"Template hotkey pressed for template: {template_name}")
+        
+        # Check if we're already recording
+        if self.is_recording:
+            logging.warning("Cannot start template recording while already recording")
+            self.tray_manager.show_message(
+                "Recording in Progress",
+                "Please finish the current recording before using a template.",
+                QSystemTrayIcon.MessageIcon.Warning
+            )
+            return
+            
+        # Start recording with the selected template
+        self.journaling_mode = True
+        self._set_active_template(template_name)
+        self.toggle_recording()
+        
+    def _set_active_template(self, template_name):
+        """
+        Set the active template for the next journal entry.
+        
+        Args:
+            template_name: Name of the template to use
+        """
+        if not hasattr(self, 'journal_manager') or not self.journal_manager:
+            logging.error("Journal manager not initialized, cannot set active template")
+            return
+            
+        # Store the template name in the journal manager
+        self.journal_manager.active_template = template_name
+        
+        # Get template configuration
+        template_config = self.template_manager.get_template_config(template_name)
+        
+        # Set custom save location if specified
+        if template_config and "save_location" in template_config and template_config["save_location"]:
+            self.journal_manager.custom_output_dir = template_config["save_location"]
+        else:
+            self.journal_manager.custom_output_dir = None
+            
+        # Set custom tags if specified
+        if template_config and "tags" in template_config:
+            self.journal_manager.custom_tags = template_config["tags"]
+        else:
+            self.journal_manager.custom_tags = None
+            
+        logging.info(f"Set active template to '{template_name}'")
+ 2819f8b (feat: Add task for batch audio import feature)
 
     def quit(self):
         """Quit the application."""
@@ -1326,8 +2453,74 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     
-    # Create and show the voice typer
-    voice_typer = VoiceTyper(app)
+    # Set application attributes for better macOS integration
+    if sys.platform == 'darwin':  # macOS specific
+        from Foundation import NSBundle
+        # Set the bundle name to show in the menu bar
+        bundle = NSBundle.mainBundle()
+        if bundle:
+            info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+            if info:
+                info['CFBundleName'] = 'WhisperNotes'
+    
+ HEAD
+    # Create the main application with error handling and logging
+    try:
+        logger.info("Instantiating WhisperNotes...")
+        whisper_notes = WhisperNotes(app)
+        logger.info("WhisperNotes instantiated successfully.")
+    except Exception as e:
+        logger.exception("Exception during WhisperNotes instantiation: %s", e)
+        import traceback
+        print("Exception during WhisperNotes instantiation:")
+        print(traceback.format_exc())
+        sys.exit(1)
+
+ 2819f8b (feat: Add task for batch audio import feature)
+    # On macOS, we need to ensure the application is properly activated
+    if sys.platform == 'darwin':
+        from AppKit import NSApp
+        NSApp.activateIgnoringOtherApps_(True)
     
     # Start the event loop
     sys.exit(app.exec())
+ HEAD
+
+
+# ------------------------------------------------------------------------------
+# Proposed Module Split / Refactor Plan
+# ------------------------------------------------------------------------------
+# To improve maintainability and adhere to the project rule of keeping files
+# under 500 lines, consider splitting whisper_notes.py into the following modules:
+#
+# 1. tray.py
+#    - System tray icon, menu, and notification logic
+#    - Tray setup, icon updates, and user actions
+#
+# 2. hotkeys.py
+#    - Global hotkey registration, handling, and signal emission
+#    - Platform-specific hotkey logic and permission checks
+#
+# 3. audio.py
+#    - Audio recording thread (RecordingThread), sounddevice integration
+#    - Audio data management, memory cleanup
+#
+# 4. transcription.py
+#    - ModelLoader, TranscriptionWorker, and related threading logic
+#    - Whisper model loading, transcription, and error handling
+#
+# 5. journaling.py
+#    - JournalingManager and journal entry creation
+#    - Integration with templates and clipboard management
+#
+# 6. main.py (or app.py)
+#    - Application entry point and orchestration
+#    - Instantiates and wires together the above modules
+#
+# 7. utils.py
+#    - Shared utility functions, error handling, and platform helpers
+#
+# Each module should have clear docstrings and be independently testable.
+# This split will improve readability, testability, and future extensibility.
+# ------------------------------------------------------------------------------
+ 2819f8b (feat: Add task for batch audio import feature)

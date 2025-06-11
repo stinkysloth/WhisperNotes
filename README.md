@@ -55,7 +55,7 @@ Transform your spoken thoughts into organized, searchable journal entries with A
 
 2. **Clone this repository** or download the source code:
    ```bash
-   git clone https://github.com/stinkysloth/WhisperNotes.git
+   git clone https://github.com/pieChartsAreLies/WhisperNotes.git
    cd WhisperNotes
    ```
 
@@ -90,7 +90,7 @@ Transform your spoken thoughts into organized, searchable journal entries with A
 
 2. **Clone this repository** or download the source code:
    ```cmd
-   git clone https://github.com/stinkysloth/WhisperNotes.git
+   git clone https://github.com/pieChartsAreLies/WhisperNotes.git
    cd WhisperNotes
    ```
 
@@ -228,6 +228,16 @@ When using the journaling feature:
 
 - Regular transcriptions are automatically saved to the configured output file (default: `~/Documents/WhisperNotesTranscriptions.md`) with timestamps.
 - Journal entries are saved to `~/Documents/Personal/Audio Journal/Journal.md` with timestamps, summaries, and links to detailed entries.
+
+## Recent Improvements
+
+As of June 2025, WhisperNotes has received several important stability and performance enhancements:
+
+- **Memory Management**: Improved memory handling with explicit cleanup of audio data after processing to prevent memory leaks during extended use.
+- **Thread Safety**: Enhanced thread synchronization with mutex locks to ensure reliable operation when handling concurrent tasks.
+- **UI Consistency**: Fixed system tray notification icons for better compatibility with PyQt6.
+- **Code Maintainability**: Refactored complex cleanup logic into smaller, focused methods for improved reliability during application shutdown.
+- **Error Handling**: Improved error recovery across the application to ensure a smoother user experience even when issues occur.
 
 ## Customization
 
