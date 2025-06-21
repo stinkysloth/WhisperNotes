@@ -2766,6 +2766,11 @@ Journal Entry:
 
 
 if __name__ == "__main__":
+    # Handle multiprocessing in frozen applications
+    import multiprocessing
+    if getattr(sys, 'frozen', False):
+        multiprocessing.freeze_support()
+    
     # Create the Qt Application
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
