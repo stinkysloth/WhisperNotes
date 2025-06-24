@@ -47,6 +47,16 @@
     -   Add more targeted exception handling for specific operations.
     -   Add appropriate error recovery mechanisms.
 
+## Packaging (2025-06-21)
+
+- [ ] **Fix macOS Application Packaging**
+  - [ ] Resolve infinite process spawning issue on macOS
+  - [ ] Investigate missing libraries: `libsox.dylib` and `libc++.1.dylib`
+  - [ ] Address macOS SDK version warnings for various binaries
+  - [ ] Consider moving from onefile to onedir mode for better macOS compatibility
+  - [ ] Implement proper code signing for the application
+  - [ ] Test on a clean macOS installation
+
 ## Discovered Issues
 
 -   [ ] PyQt6 enum access causing AttributeError in system tray notifications

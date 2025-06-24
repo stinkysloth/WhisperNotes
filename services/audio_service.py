@@ -12,7 +12,7 @@ import sounddevice as sd
 from PySide6.QtCore import QObject, Signal, Slot, QMutex
 
 from core.constants import AppConstants, RecordingState
-from utils.audio_utils import save_audio_to_file, convert_audio_format
+from utils.audio_utils import save_audio
 
 logger = logging.getLogger(__name__)
 
@@ -35,59 +35,65 @@ class AudioService(QObject):
         self.mutex = QMutex()
         
     def start_recording(self) -> bool:
-        """Start audio recording.
-        
-        Returns:
-            bool: True if recording started successfully, False otherwise
-        """
+        """Start audio recording using QThread and RecordingWorker."""
         if self.recording_state != RecordingState.STOPPED:
             logger.warning("Recording already in progress")
             return False
-            
         try:
             self.recording_state = RecordingState.RECORDING
             self.audio_data = []
-            
-            # Start recording in a separate thread
-            self.recording_thread = RecordingThread()
-            self.recording_thread.finished.connect(self._on_recording_finished)
-            self.recording_thread.error.connect(self._on_recording_error)
+
+            # Set up QThread and worker
+            from PySide6.QtCore import QThread
+            self.recording_thread = QThread()
+            self.recording_worker = RecordingWorker(
+                sample_rate=self.sample_rate,
+                channels=1,
+                chunk_size=AppConstants.CHUNK_SIZE,
+                max_duration=AppConstants.MAX_RECORDING_DURATION
+            )
+            self.recording_worker.moveToThread(self.recording_thread)
+            self.recording_thread.started.connect(self.recording_worker.run)
+            self.recording_worker.finished.connect(self._on_recording_finished)
+            self.recording_worker.finished.connect(self.recording_thread.quit)
+            self.recording_worker.finished.connect(self.recording_worker.deleteLater)
+            self.recording_thread.finished.connect(self.recording_thread.deleteLater)
+            self.recording_worker.error.connect(self._on_recording_error)
+            self.recording_worker.error.connect(self.recording_thread.quit)
+            self.recording_worker.error.connect(self.recording_worker.deleteLater)
+            self.recording_thread.finished.connect(self.recording_thread.deleteLater)
+
             self.recording_thread.start()
-            
             self.recording_started.emit()
             logger.info("Recording started")
             return True
-            
         except Exception as e:
             self.recording_state = RecordingState.STOPPED
             error_msg = f"Failed to start recording: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.error_occurred.emit(error_msg)
             return False
+
     
     def stop_recording(self) -> bool:
-        """Stop the current recording.
-        
-        Returns:
-            bool: True if recording was stopped, False if no recording was in progress
-        """
+        """Stop the current recording."""
         if self.recording_state != RecordingState.RECORDING:
             return False
-            
         try:
+            if hasattr(self, 'recording_worker') and self.recording_worker:
+                self.recording_worker.stop()
             if self.recording_thread and self.recording_thread.isRunning():
-                self.recording_thread.stop()
+                self.recording_thread.quit()
                 self.recording_thread.wait()
-                
             self.recording_state = RecordingState.STOPPED
             logger.info("Recording stopped")
             return True
-            
         except Exception as e:
             error_msg = f"Error stopping recording: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.error_occurred.emit(error_msg)
             return False
+
     
     def save_recording(self, file_path: str, format: str = "wav") -> bool:
         """Save the current recording to a file.
@@ -130,15 +136,14 @@ class AudioService(QObject):
         self.error_occurred.emit(error_msg)
 
 
-class RecordingThread(QObject):
-    """Thread for recording audio."""
-    
-    # Signals
+from PySide6.QtCore import QObject, Signal, QThread
+
+class RecordingWorker(QObject):
+    """Worker object for recording audio, to be run in a QThread."""
     finished = Signal(object)  # audio_data
-    error = Signal(str)        # error_message
-    
+    error = Signal(str)
+
     def __init__(self, sample_rate=16000, channels=1, chunk_size=1024, max_duration=900.0):
-        """Initialize the recording thread."""
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
@@ -146,15 +151,15 @@ class RecordingThread(QObject):
         self.max_duration = max_duration
         self.stop_flag = False
         self.audio_data = []
-    
+
     def run(self):
-        """Run the recording thread."""
+        import sounddevice as sd
+        import numpy as np
+        import time
         try:
             self.audio_data = []
             start_time = time.time()
-            
-            def callback(indata, frames, time, status):
-                """Callback for audio input stream."""
+            def callback(indata, frames, time_info, status):
                 if status:
                     logger.warning(f"Audio stream status: {status}")
                 if self.stop_flag:
@@ -163,8 +168,6 @@ class RecordingThread(QObject):
                     logger.warning("Maximum recording duration reached")
                     raise sd.CallbackStop()
                 self.audio_data.append(indata.copy())
-            
-            # Start recording
             with sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
@@ -173,18 +176,13 @@ class RecordingThread(QObject):
             ) as stream:
                 logger.info("Audio stream started")
                 while not self.stop_flag:
-                    sd.sleep(100)  # Check every 100ms
-            
-            # If we got here, recording stopped normally
+                    sd.sleep(100)
             if self.audio_data:
                 audio_data = np.concatenate(self.audio_data)
                 self.finished.emit(audio_data)
-            
         except Exception as e:
             error_msg = f"Recording error: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.error.emit(error_msg)
-    
     def stop(self):
-        """Stop the recording."""
         self.stop_flag = True

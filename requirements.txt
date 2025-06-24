@@ -1,7 +1,7 @@
 # Core dependencies
 PySide6>=6.9.0
-faster-whisper>=1.0.0  # Faster implementation of Whisper with Python 3.13 support
-torch>=2.0.0  # Required for faster-whisper
+openai-whisper>=1.0.0  # Transcription backend
+torch>=2.0.0  # Required for whisper
 numpy>=1.26.0
 sounddevice>=0.4.6
 soundfile>=0.12.1

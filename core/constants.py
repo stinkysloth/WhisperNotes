@@ -1,6 +1,7 @@
-""
+"""
 Application-wide constants for WhisperNotes.
 """
+import sys
 from enum import Enum
 
 class AppConstants:

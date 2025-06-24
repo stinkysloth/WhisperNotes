@@ -108,11 +108,25 @@ class TranscriptionService(QObject):
         """Handle completed transcription."""
         logger.info("Transcription completed successfully")
         self.transcription_finished.emit(text)
+        # Clean up transcription thread and worker
+        if hasattr(self, 'transcription_thread') and self.transcription_thread is not None:
+            self.transcription_thread.quit()
+            self.transcription_thread.wait()
+            self.transcription_thread = None
+        if hasattr(self, 'transcription_worker'):
+            self.transcription_worker = None
     
     def _on_transcription_error(self, error_msg):
         """Handle transcription error."""
         logger.error(f"Transcription failed: {error_msg}")
         self.error_occurred.emit(f"Transcription failed: {error_msg}")
+        # Clean up transcription thread and worker
+        if hasattr(self, 'transcription_thread') and self.transcription_thread is not None:
+            self.transcription_thread.quit()
+            self.transcription_thread.wait()
+            self.transcription_thread = None
+        if hasattr(self, 'transcription_worker'):
+            self.transcription_worker = None
 
 
 class ModelLoader(QObject):
@@ -134,25 +148,13 @@ class ModelLoader(QObject):
     def run(self):
         """Load the Whisper model."""
         try:
-            from faster_whisper import WhisperModel
-            
+            import whisper
             logger.info(f"Loading Whisper model: {self.model_name}")
-            model = WhisperModel(
-                self.model_name,
-                device="auto",
-                compute_type="int8"
-            )
-            
-            # Test the model with a small audio buffer
+            # Use CPU as MPS backend is missing required ops for Whisper
+            model = whisper.load_model(self.model_name, device="cpu")
             logger.debug("Testing model with empty audio")
-            segments, _ = model.transcribe(
-                np.zeros((16000,), dtype=np.float32),
-                language="en"
-            )
-            list(segments)  # Force evaluation
-            
+            _ = model.transcribe(np.zeros((16000,), dtype=np.float32), language="en")
             self.finished.emit(model)
-            
         except Exception as e:
             error_msg = f"Failed to load Whisper model: {str(e)}"
             logger.error(error_msg, exc_info=True)
@@ -185,42 +187,28 @@ class TranscriptionWorker(QObject):
         """Run the transcription."""
         try:
             # Ensure audio is in the correct format
+            logger.info(f"[TranscriptionWorker] audio_data initial shape: {self.audio_data.shape}, dtype: {self.audio_data.dtype}")
+            if len(self.audio_data.shape) == 2 and self.audio_data.shape[1] == 1:
+                logger.info("[TranscriptionWorker] Flattening audio_data from (N,1) to (N,)")
+                self.audio_data = self.audio_data.flatten()
+                logger.info(f"[TranscriptionWorker] audio_data shape after flatten: {self.audio_data.shape}")
             if self.audio_data.dtype != np.float32:
                 self.audio_data = self.audio_data.astype(np.float32) / 32768.0
-            
-            # Use faster-whisper for transcription
-            from faster_whisper import WhisperModel
-            
+            import whisper
             logger.info(f"Starting transcription with model: {self.model_name}")
-            model = WhisperModel(
-                self.model_name,
-                device="auto",
-                compute_type="int8"
-            )
-            
-            # Transcribe the audio
-            segments, _ = model.transcribe(
-                self.audio_data,
-                language="en",
-                beam_size=5,
-                vad_filter=True
-            )
-            
-            # Combine segments into a single text
-            text = " ".join(segment.text for segment in segments)
-            
+            # Use CPU as MPS backend is missing required ops for Whisper
+            model = whisper.load_model(self.model_name, device="cpu")
+            result = model.transcribe(self.audio_data, language="en")
+            text = result["text"]
             if self._should_stop:
                 logger.info("Transcription was stopped")
                 return
-                
             logger.info("Transcription completed successfully")
             self.transcription_ready.emit(text.strip())
-            
         except Exception as e:
             error_msg = f"Transcription failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.error.emit(error_msg)
-            
         finally:
             self.finished.emit()
     
